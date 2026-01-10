@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="46.993435mm"
+   height="48.772839mm"
+   viewBox="0 0 46.993435 48.772839"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   sodipodi:docname="Flairio-icon.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="0.74208053"
+     inkscape:cx="489.83902"
+     inkscape:cy="-291.74731"
+     inkscape:window-width="1920"
+     inkscape:window-height="1051"
+     inkscape:window-x="-9"
+     inkscape:window-y="-9"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1" />
+  <defs
+     id="defs1">
+    <rect
+       x="92.981827"
+       y="103.76232"
+       width="1082.0928"
+       height="452.78104"
+       id="rect13" />
+    <rect
+       x="203.48196"
+       y="149.57945"
+       width="505.336"
+       height="226.39052"
+       id="rect1" />
+  </defs>
+  <g
+     inkscape:label="Livello 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-70.731323,-124.21518)">
+    <text
+       xml:space="preserve"
+       transform="scale(0.26458333)"
+       id="text1"
+       style="font-size:64px;font-family:'Playfair Display';-inkscape-font-specification:'Playfair Display';text-align:start;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect1);display:inline;fill:#2c2c2c;stroke:#2c2c2c;stroke-width:0.423307;stroke-opacity:0.172549" />
+    <text
+       xml:space="preserve"
+       style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:50.8px;line-height:0;font-family:Futura;-inkscape-font-specification:'Futura, Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;text-align:start;letter-spacing:0.03175px;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#2c2c2c;stroke:#2c2c2c;stroke-width:0.112;stroke-opacity:0.172549"
+       x="69.52581"
+       y="160.08763"
+       id="text3"><tspan
+         sodipodi:role="line"
+         id="tspan3"
+         style="stroke-width:0.112"
+         x="69.52581"
+         y="160.08763" /></text>
+    <text
+       xml:space="preserve"
+       transform="scale(0.26458333)"
+       id="text13"
+       style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:192px;line-height:0;font-family:Futura;-inkscape-font-specification:'Futura, Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;text-align:start;letter-spacing:0.05px;writing-mode:lr-tb;direction:ltr;white-space:pre;shape-inside:url(#rect13);display:inline;fill:#2c2c2c;stroke:#2c2c2c;stroke-width:0.423307;stroke-opacity:0.172549" />
+    <g
+       id="g1">
+      <rect
+         style="fill:#ff0000;stroke:#2c2c2c;stroke-width:0.112;stroke-opacity:0.172549"
+         id="rect14"
+         width="46.881435"
+         height="48.660839"
+         x="70.787323"
+         y="124.27118" />
+      <path
+         d="M 105.22624,137.8828 V 129.45 H 83.229841 v 38.3032 h 9.9568 v -15.0368 h 10.921999 v -8.4328 H 93.186641 v -6.4008 z"
+         id="text4"
+         style="font-weight:bold;font-size:50.8px;line-height:0;font-family:Futura;-inkscape-font-specification:'Futura, Bold';letter-spacing:0.0132292px;fill:#ffffff;stroke:#2c2c2c;stroke-width:0.112;stroke-opacity:0.172549"
+         aria-label="F" />
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(del C:FLaiRIOmain.py)",
+      "Bash(pip install:*)",
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(taskkill:*)",
+      "Bash(set PYTHONIOENCODING=utf-8:*)",
+      "Bash(echo:*)",
+      "Bash(findstr:*)",
+      "Bash(del C:FLaiRIOflairio.db)",
+      "Bash(if exist C:FLaiRIOflairio.db del C:FLaiRIOflairio.db)",
+      "Bash(ping:*)",
+      "Bash(tasklist:*)",
+      "Bash(git init:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
