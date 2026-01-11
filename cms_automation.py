@@ -494,7 +494,8 @@ async def test_publish():
     }
 
     # Crea publisher e pubblica
-    publisher = CMSPublisher(username='SRinaldi', password='voce2026')
+    # NOTA: Inserisci le tue credenziali qui per testare
+    publisher = CMSPublisher(username='your_username', password='your_password')
 
     try:
         await publisher.start(headless=False)

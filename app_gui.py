@@ -1677,8 +1677,8 @@ class MainWindow(QMainWindow):
             self.publishing_email_id = email_id
 
             # Avvia thread pubblicazione CMS
-            cms_username = self.cms_user_input.text().strip() or os.getenv("CMS_USERNAME", "SRinaldi")
-            cms_password = self.cms_pass_input.text().strip() or os.getenv("CMS_PASSWORD", "voce2026")
+            cms_username = self.cms_user_input.text().strip() or os.getenv("CMS_USERNAME", "")
+            cms_password = self.cms_pass_input.text().strip() or os.getenv("CMS_PASSWORD", "")
 
             # Determina headless mode
             headless = self.headless_combo.currentIndex() == 1  # 0=Visibile, 1=Nascosto
@@ -2189,8 +2189,8 @@ class MainWindow(QMainWindow):
             print(f"[AUTO] Pubblicazione automatica dell'articolo...")
 
             # Ottieni credenziali CMS (usa gli stessi della GUI)
-            cms_username = self.cms_user_input.text().strip() or os.getenv("CMS_USERNAME", "voce")
-            cms_password = self.cms_pass_input.text().strip() or os.getenv("CMS_PASSWORD", "voce2026")
+            cms_username = self.cms_user_input.text().strip() or os.getenv("CMS_USERNAME", "")
+            cms_password = self.cms_pass_input.text().strip() or os.getenv("CMS_PASSWORD", "")
 
             if not cms_username or not cms_password:
                 print(f"[AUTO] ❌ Credenziali CMS mancanti")
