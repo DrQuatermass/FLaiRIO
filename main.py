@@ -166,10 +166,10 @@ class EmailToCRMWorkflow:
                 if self.config.get('workflow', {}).get('salva_backup_json', True):
                     processor.save_emails_to_json(filtered, 'emails_filtered.json')
 
-                # Marca come lette se configurato
-                if self.config.get('workflow', {}).get('marca_email_come_lette', False):
-                    for email_data in all_emails:
-                        processor.mark_as_read(email_data['id'])
+                # NON marcare più come lette - richiesta utente: le email devono rimanere non lette sul server
+                # if self.config.get('workflow', {}).get('marca_email_come_lette', False):
+                #     for email_data in all_emails:
+                #         processor.mark_as_read(email_data['id'])
 
                 return all_emails
 

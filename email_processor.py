@@ -139,11 +139,12 @@ class EmailProcessor:
             filename = part.get_filename()
 
             # Debug: mostra tutte le parti con immagini
-            if content_type.startswith('image/'):
+            if content_type.startswith('image/') and DEBUG_MODE:
                 print(f"[DEBUG] Trovata immagine: type={content_type}, filename={filename}, disposition={content_disposition[:50] if content_disposition else 'None'}")
 
-            # Verifica se è un allegato (due metodi: disposition o filename con image)
-            is_attachment = "attachment" in content_disposition.lower() or (filename and content_type.startswith('image/'))
+            # Verifica se è un allegato - SOLO se ha Content-Disposition: attachment
+            # NON includere immagini inline (inline o senza disposition)
+            is_attachment = "attachment" in content_disposition.lower()
 
             if is_attachment and filename:
                 # Decodifica il nome file
@@ -189,7 +190,8 @@ class EmailProcessor:
             return []
 
         try:
-            self.mail.select(mailbox)
+            # Seleziona in modalità READONLY per evitare modifiche accidentali
+            self.mail.select(mailbox, readonly=True)
 
             # Costruisci criteri di ricerca
             criteria = f'FROM "{sender_email}"'
@@ -283,8 +285,8 @@ class EmailProcessor:
         MOLTO PIÙ VELOCE di search
         """
         try:
-            # Prima seleziona la mailbox
-            self.mail.select(mailbox)
+            # Prima seleziona la mailbox in modalità READONLY
+            self.mail.select(mailbox, readonly=True)
 
             # Usa STATUS per ottenere info velocemente
             status, data = self.mail.status(mailbox, '(MESSAGES UNSEEN UIDNEXT)')
@@ -312,7 +314,8 @@ class EmailProcessor:
                 if not self.connect():
                     return set()
 
-            self.mail.select(mailbox)
+            # Seleziona in modalità READONLY
+            self.mail.select(mailbox, readonly=True)
 
             # Cerca tutti gli UID sul server
             status, messages = self.mail.uid('SEARCH', None, 'ALL')
@@ -350,11 +353,12 @@ class EmailProcessor:
         try:
             # Reconnect se necessario (gestisce errori SSL)
             try:
-                self.mail.select(mailbox)
+                # Seleziona in modalità READONLY per non modificare le email
+                self.mail.select(mailbox, readonly=True)
             except Exception as e:
                 print(f"[!] Riconnessione necessaria: {e}")
                 if self.connect():
-                    self.mail.select(mailbox)
+                    self.mail.select(mailbox, readonly=True)
                 else:
                     return []
 
@@ -478,11 +482,12 @@ class EmailProcessor:
         try:
             # Reconnect se necessario
             try:
-                self.mail.select(mailbox)
+                # Seleziona in modalità READONLY
+                self.mail.select(mailbox, readonly=True)
             except Exception as e:
                 print(f"[!] Riconnessione necessaria: {e}")
                 if self.connect():
-                    self.mail.select(mailbox)
+                    self.mail.select(mailbox, readonly=True)
                 else:
                     return []
 

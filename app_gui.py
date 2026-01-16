@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QPushButton,
     QLabel, QLineEdit, QListWidget, QTextEdit, QMessageBox,
     QSplitter, QHeaderView, QProgressBar, QComboBox, QGroupBox,
-    QGridLayout, QCheckBox
+    QGridLayout, QCheckBox, QDialog, QFormLayout
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QFont, QColor
@@ -257,17 +257,26 @@ class ArticleGeneratorThread(QThread):
     error = Signal(str)
     progress = Signal(str)
 
-    def __init__(self, email_data, provider):
+    def __init__(self, email_data, provider, format_mode=False):
         super().__init__()
         self.email_data = email_data
         self.provider = provider
+        self.format_mode = format_mode
 
     def run(self):
         try:
-            self.progress.emit("Generazione articolo con LLM...")
+            if self.format_mode:
+                self.progress.emit("Impaginazione articolo con LLM...")
+            else:
+                self.progress.emit("Generazione articolo con LLM...")
+
             generator = ArticleGenerator(provider=self.provider)
 
-            articles = generator.batch_generate_articles([self.email_data])
+            # Passa il flag format_mode al generator
+            articles = generator.batch_generate_articles(
+                [self.email_data],
+                format_mode=self.format_mode
+            )
 
             if articles:
                 self.finished.emit(articles[0])
@@ -339,6 +348,53 @@ class CMSPublishThread(QThread):
 
             self.progress.emit("Pubblicazione articolo in corso...")
             result = await publisher.publish_article(self.article)
+
+            # Se pubblicazione riuscita E ci sono foto, caricale nella galleria
+            if result.get('success') and result.get('article_id'):
+                foto_path = self.article.get('foto_path')
+
+                if foto_path:
+                    # Supporto singola foto o lista
+                    photo_paths = [foto_path] if isinstance(foto_path, str) else foto_path
+
+                    # Converti a path assoluti
+                    photo_paths = [os.path.abspath(p) if not os.path.isabs(p) else p for p in photo_paths]
+
+                    # Filtra solo file esistenti
+                    photo_paths = [p for p in photo_paths if os.path.exists(p)]
+
+                    if photo_paths:
+                        self.progress.emit(f"Caricamento {len(photo_paths)} foto nella galleria...")
+                        print(f"[GUI] Avvio caricamento {len(photo_paths)} foto per article_id: {result['article_id']}")
+
+                        try:
+                            gallery_result = await publisher.upload_photos_to_gallery(
+                                result['article_id'],
+                                photo_paths
+                            )
+
+                            if gallery_result.get('success'):
+                                print(f"[GUI] ✓ {gallery_result['uploaded_count']}/{gallery_result['total_photos']} foto caricate")
+                                result['photos_uploaded'] = gallery_result['uploaded_count']
+                            else:
+                                error_msg = gallery_result.get('error', 'Errore sconosciuto')
+                                print(f"[GUI] ✗ Errore caricamento foto: {error_msg}")
+                                result['photos_uploaded'] = 0
+
+                        except Exception as e:
+                            print(f"[GUI] ✗ ERRORE durante caricamento foto: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            result['photos_uploaded'] = 0
+                    else:
+                        print(f"[GUI] Nessuna foto valida da caricare")
+                        result['photos_uploaded'] = 0
+                else:
+                    print(f"[GUI] Articolo senza foto")
+                    result['photos_uploaded'] = 0
+            else:
+                print(f"[GUI] Skip upload foto (success={result.get('success')}, article_id={result.get('article_id')})")
+                result['photos_uploaded'] = 0
 
             self.progress.emit("Chiusura browser...")
             await publisher.close()
@@ -493,6 +549,18 @@ class MainWindow(QMainWindow):
         self.save_config()
 
         print(f"[CONFIG] Modalità browser salvata: {'Nascosto' if headless else 'Visibile'}")
+
+    def on_auto_mode_changed(self, index):
+        """Callback quando cambia la modalità di auto-elaborazione"""
+        if 'auto_processing' not in self.config:
+            self.config['auto_processing'] = {}
+
+        mode = 'llm' if index == 0 else 'format_only'
+        self.config['auto_processing']['mode'] = mode
+        self.save_config()
+
+        mode_name = "Elabora con LLM" if mode == 'llm' else "Solo impagina e pubblica"
+        print(f"[CONFIG] Modalità auto-elaborazione: {mode_name}")
 
     def on_monitor_interval_changed(self, index):
         """Callback quando cambia l'intervallo di monitoraggio"""
@@ -719,10 +787,20 @@ class MainWindow(QMainWindow):
 
         # Pulsanti azioni articolo
         article_btn_layout = QHBoxLayout()
+
+        # Pulsante "Impagina e Pubblica" - per pubblicazione diretta senza LLM
+        self.btn_format_publish = QPushButton("📄 Impagina e Pubblica")
+        self.btn_format_publish.clicked.connect(self.format_and_publish_email)
+        self.btn_format_publish.setEnabled(False)
+        self.btn_format_publish.setToolTip("Pubblica il contenuto della mail direttamente senza elaborazione LLM")
+        article_btn_layout.addWidget(self.btn_format_publish)
+
+        # Pulsante "Pubblica su CRM" - per articoli già generati
         self.btn_publish = QPushButton("📤 Pubblica su CRM")
         self.btn_publish.clicked.connect(self.publish_article)
         self.btn_publish.setEnabled(False)
         article_btn_layout.addWidget(self.btn_publish)
+
         article_btn_layout.addStretch()
         preview_layout.addLayout(article_btn_layout)
 
@@ -921,6 +999,26 @@ class MainWindow(QMainWindow):
         headless_layout.addStretch()
         cms_layout.addLayout(headless_layout)
 
+        # Modalità auto-elaborazione
+        auto_mode_layout = QHBoxLayout()
+        auto_mode_layout.addWidget(QLabel("Modalità auto-elaborazione:"))
+        self.auto_mode_combo = QComboBox()
+        self.auto_mode_combo.addItems([
+            "Elabora con LLM (default)",
+            "Solo impagina e pubblica"
+        ])
+        # Carica da config
+        saved_mode = self.config.get('auto_processing', {}).get('mode', 'llm')
+        self.auto_mode_combo.setCurrentIndex(0 if saved_mode == 'llm' else 1)
+        self.auto_mode_combo.currentIndexChanged.connect(self.on_auto_mode_changed)
+        self.auto_mode_combo.setToolTip(
+            "LLM: Elabora le email con intelligenza artificiale prima della pubblicazione\n"
+            "Impagina: Pubblica direttamente il contenuto della mail senza elaborazione"
+        )
+        auto_mode_layout.addWidget(self.auto_mode_combo)
+        auto_mode_layout.addStretch()
+        cms_layout.addLayout(auto_mode_layout)
+
         # Pulsante installazione Chrome
         chrome_layout = QHBoxLayout()
         self.chrome_status_label = QLabel()
@@ -966,6 +1064,87 @@ class MainWindow(QMainWindow):
         monitor_layout.addWidget(monitor_info)
 
         layout.addWidget(monitor_group)
+
+        # === NOTIFICHE ===
+        notif_group = QGroupBox("Notifiche Pubblicazione Automatica")
+        notif_layout = QVBoxLayout(notif_group)
+
+        # Email Notifications
+        email_notif_check = QCheckBox("Abilita notifiche Email")
+        self.email_notif_enabled = email_notif_check
+        email_notif_check.setChecked(self.config.get('notifications', {}).get('email', {}).get('enabled', False))
+        notif_layout.addWidget(email_notif_check)
+
+        # Email recipients
+        email_recipients_layout = QHBoxLayout()
+        email_recipients_layout.addWidget(QLabel("Email destinatari:"))
+        self.email_notif_recipients = QLineEdit()
+        saved_recipients = self.config.get('notifications', {}).get('email', {}).get('to_emails', [])
+        self.email_notif_recipients.setText(', '.join(saved_recipients) if saved_recipients else '')
+        self.email_notif_recipients.setPlaceholderText("email1@example.com, email2@example.com")
+        self.email_notif_recipients.setToolTip("Inserisci uno o più indirizzi email separati da virgola")
+        email_recipients_layout.addWidget(self.email_notif_recipients)
+        notif_layout.addLayout(email_recipients_layout)
+
+        # Test Email button
+        test_email_layout = QHBoxLayout()
+        test_email_btn = QPushButton("📧 Invia Email di Test")
+        test_email_btn.setMaximumWidth(200)
+        test_email_btn.clicked.connect(self.test_email_notification)
+        test_email_layout.addWidget(test_email_btn)
+        test_email_layout.addStretch()
+        notif_layout.addLayout(test_email_layout)
+
+        notif_layout.addSpacing(10)
+
+        # Telegram Notifications
+        telegram_notif_check = QCheckBox("Abilita notifiche Telegram")
+        self.telegram_notif_enabled = telegram_notif_check
+        telegram_notif_check.setChecked(self.config.get('notifications', {}).get('telegram', {}).get('enabled', False))
+        notif_layout.addWidget(telegram_notif_check)
+
+        # Telegram bot token
+        telegram_token_layout = QHBoxLayout()
+        telegram_token_layout.addWidget(QLabel("Bot Token:"))
+        self.telegram_bot_token = QLineEdit()
+        self.telegram_bot_token.setText(self.config.get('notifications', {}).get('telegram', {}).get('bot_token', ''))
+        self.telegram_bot_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.telegram_bot_token.setPlaceholderText("123456:ABC-DEF...")
+        telegram_token_layout.addWidget(self.telegram_bot_token)
+        notif_layout.addLayout(telegram_token_layout)
+
+        # Telegram chat IDs
+        telegram_chat_layout = QHBoxLayout()
+        telegram_chat_layout.addWidget(QLabel("Chat ID(s):"))
+        self.telegram_chat_ids = QLineEdit()
+        saved_chat_ids = self.config.get('notifications', {}).get('telegram', {}).get('chat_ids', [])
+        self.telegram_chat_ids.setText(', '.join(saved_chat_ids) if saved_chat_ids else '')
+        self.telegram_chat_ids.setPlaceholderText("123456789, 987654321")
+        self.telegram_chat_ids.setToolTip("Inserisci uno o più Chat ID separati da virgola")
+        telegram_chat_layout.addWidget(self.telegram_chat_ids)
+        notif_layout.addLayout(telegram_chat_layout)
+
+        # Test Telegram button
+        test_telegram_layout = QHBoxLayout()
+        test_telegram_btn = QPushButton("📱 Invia Test Telegram")
+        test_telegram_btn.setMaximumWidth(200)
+        test_telegram_btn.clicked.connect(self.test_telegram_notification)
+        test_telegram_layout.addWidget(test_telegram_btn)
+        test_telegram_layout.addStretch()
+        notif_layout.addLayout(test_telegram_layout)
+
+        # Info Telegram
+        telegram_info = QLabel(
+            "Come ottenere Bot Token e Chat ID:\n"
+            "1. Cerca @BotFather su Telegram e crea un bot con /newbot\n"
+            "2. Copia il token ricevuto\n"
+            "3. Cerca @userinfobot su Telegram per ottenere il tuo Chat ID"
+        )
+        telegram_info.setStyleSheet("color: #666; font-size: 11px;")
+        telegram_info.setWordWrap(True)
+        notif_layout.addWidget(telegram_info)
+
+        layout.addWidget(notif_group)
 
         # === BOTTONE SALVA ===
         save_button_layout = QHBoxLayout()
@@ -1041,6 +1220,9 @@ class MainWindow(QMainWindow):
                 if value:
                     os.environ[key] = value
 
+            # Salva configurazioni notifiche in config.json
+            self._save_notification_config()
+
             QMessageBox.information(
                 self, "Successo",
                 "Impostazioni salvate correttamente!\n\n"
@@ -1052,6 +1234,295 @@ class MainWindow(QMainWindow):
                 self, "Errore",
                 f"Errore durante il salvataggio:\n{str(e)}"
             )
+
+    def _save_notification_config(self):
+        """Salva configurazioni notifiche nel config.json"""
+        try:
+            # Parse email recipients
+            email_recipients_text = self.email_notif_recipients.text().strip()
+            email_recipients = [e.strip() for e in email_recipients_text.split(',') if e.strip()] if email_recipients_text else []
+
+            # Parse telegram chat IDs
+            telegram_chat_ids_text = self.telegram_chat_ids.text().strip()
+            telegram_chat_ids = [c.strip() for c in telegram_chat_ids_text.split(',') if c.strip()] if telegram_chat_ids_text else []
+
+            # Ottieni credenziali SMTP dalla prima casella disponibile (per test email)
+            smtp_config = {}
+            mailboxes = self.db.get_all_mailboxes(only_enabled=True)
+
+            print(f"[DEBUG] Mailboxes recuperate dal DB: {len(mailboxes) if mailboxes else 0}")
+            if mailboxes:
+                first_mailbox = mailboxes[0]
+                print(f"[DEBUG] Prima mailbox keys: {list(first_mailbox.keys())}")
+                print(f"[DEBUG] Prima mailbox values (password nascosta): {dict((k, v if k != 'password' else '***') for k, v in first_mailbox.items())}")
+
+                # Determina SMTP server e porta in base al provider
+                imap_server = first_mailbox.get('imap_server', 'imap.gmail.com')
+                email_address = first_mailbox.get('email_address', '')
+                password = first_mailbox.get('password', '')
+
+                # Mappatura speciale per provider conosciuti
+                if 'register.it' in imap_server:
+                    # Register.it usa server dedicato authsmtp.securemail.pro
+                    smtp_server = 'authsmtp.securemail.pro'
+                    smtp_port = 465  # Porta SSL Register.it
+                    print(f"[DEBUG] Provider Register.it rilevato - usando authsmtp.securemail.pro:465")
+                elif 'gmail.com' in imap_server:
+                    smtp_server = 'smtp.gmail.com'
+                    smtp_port = 587
+                    print(f"[DEBUG] Provider Gmail rilevato - usando smtp.gmail.com:587")
+                else:
+                    # Default: sostituisci imap. con smtp.
+                    smtp_server = imap_server.replace('imap.', 'smtp.')
+                    smtp_port = 587
+                    print(f"[DEBUG] Provider generico - usando {smtp_server}:587")
+
+                print(f"[DEBUG] IMAP: {imap_server} → SMTP: {smtp_server}:{smtp_port}")
+                print(f"[DEBUG] Email: {email_address}, Password presente: {bool(password)}")
+
+                smtp_config = {
+                    'smtp_server': smtp_server,
+                    'smtp_port': smtp_port,
+                    'smtp_username': email_address,
+                    'smtp_password': password,
+                    'from_email': email_address
+                }
+                print(f"[CONFIG] SMTP notifiche: {email_address}")
+                print(f"[DEBUG] smtp_config: smtp_server={smtp_config['smtp_server']}, username={smtp_config['smtp_username']}, has_password={bool(smtp_config['smtp_password'])}")
+            else:
+                print(f"[CONFIG] Warning: Nessuna casella email configurata")
+
+            # Prepara configurazione notifiche
+            notifications_config = {
+                'email': {
+                    'enabled': self.email_notif_enabled.isChecked(),
+                    'to_emails': email_recipients,
+                    **smtp_config
+                },
+                'telegram': {
+                    'enabled': self.telegram_notif_enabled.isChecked(),
+                    'bot_token': self.telegram_bot_token.text().strip(),
+                    'chat_ids': telegram_chat_ids
+                }
+            }
+
+            # Aggiorna config
+            self.config['notifications'] = notifications_config
+
+            # Salva in config.json
+            with open('config.json', 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
+
+            print("[CONFIG] Configurazioni notifiche salvate")
+
+        except Exception as e:
+            print(f"[CONFIG] Errore salvataggio notifiche: {e}")
+
+    def test_email_notification(self):
+        """Invia email di test"""
+        try:
+            # Valida configurazione email
+            email_recipients_text = self.email_notif_recipients.text().strip()
+            if not email_recipients_text:
+                QMessageBox.warning(
+                    self, "Configurazione Incompleta",
+                    "❌ Inserisci almeno un indirizzo email destinatario."
+                )
+                return
+
+            # Salva prima la configurazione
+            self._save_notification_config()
+
+            # Crea notifier SOLO per email (ignora telegram per questo test)
+            from notifier import Notifier
+            notifier = Notifier(self.config.get('notifications', {}))
+
+            # Testa solo email
+            result = notifier.test_email()
+
+            if result['success']:
+                QMessageBox.information(
+                    self, "Successo",
+                    "✅ Email di test inviata con successo!\n\n"
+                    f"Controlla la casella di posta dei destinatari."
+                )
+            else:
+                QMessageBox.warning(
+                    self, "Errore",
+                    f"❌ Impossibile inviare email di test.\n\n"
+                    f"Errore: {result.get('error', 'Sconosciuto')}\n\n"
+                    f"Verifica:\n"
+                    f"- Che esista almeno una casella configurata in 'Caselle Email'\n"
+                    f"- Le credenziali SMTP della casella\n"
+                    f"- Gli indirizzi destinatari"
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Errore",
+                f"Errore durante test email:\n{str(e)}"
+            )
+
+    def test_telegram_notification(self):
+        """Invia messaggio Telegram di test"""
+        try:
+            # Valida configurazione Telegram
+            bot_token = self.telegram_bot_token.text().strip()
+            chat_ids_text = self.telegram_chat_ids.text().strip()
+
+            if not bot_token:
+                QMessageBox.warning(
+                    self, "Configurazione Incompleta",
+                    "❌ Inserisci il Bot Token di Telegram.\n\n"
+                    "Come ottenerlo:\n"
+                    "1. Cerca @BotFather su Telegram\n"
+                    "2. Scrivi /newbot e segui le istruzioni\n"
+                    "3. Copia il token ricevuto"
+                )
+                return
+
+            if not chat_ids_text:
+                QMessageBox.warning(
+                    self, "Configurazione Incompleta",
+                    "❌ Inserisci almeno un Chat ID.\n\n"
+                    "Come ottenerlo:\n"
+                    "1. Cerca @userinfobot su Telegram\n"
+                    "2. Scrivi /start\n"
+                    "3. Copia il tuo Chat ID"
+                )
+                return
+
+            # Salva prima la configurazione
+            self._save_notification_config()
+
+            # Crea notifier SOLO per telegram (ignora email per questo test)
+            from notifier import Notifier
+            notifier = Notifier(self.config.get('notifications', {}))
+
+            # Testa solo telegram
+            result = notifier.test_telegram()
+
+            if result['success']:
+                QMessageBox.information(
+                    self, "Successo",
+                    f"✅ Messaggio Telegram inviato con successo!\n\n"
+                    f"Messaggi inviati: {result.get('sent_count', 0)}"
+                )
+            else:
+                QMessageBox.warning(
+                    self, "Errore",
+                    f"❌ Impossibile inviare messaggio Telegram.\n\n"
+                    f"Errore: {result.get('error', 'Sconosciuto')}\n\n"
+                    f"Verifica:\n"
+                    f"- Bot Token corretto\n"
+                    f"- Chat ID corretto\n"
+                    f"- Di aver avviato una conversazione con il bot"
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Errore",
+                f"Errore durante test Telegram:\n{str(e)}"
+            )
+
+    def _send_publication_notification(self, email_id: str, result: dict):
+        """Invia notifiche di pubblicazione (Email e/o Telegram)"""
+        try:
+            # Verifica se almeno una notifica è abilitata
+            notifications_config = self.config.get('notifications', {})
+            email_enabled = notifications_config.get('email', {}).get('enabled', False)
+            telegram_enabled = notifications_config.get('telegram', {}).get('enabled', False)
+
+            if not email_enabled and not telegram_enabled:
+                print("[NOTIF] Nessuna notifica abilitata")
+                return
+
+            # Recupera informazioni email originale
+            email_data = None
+            for email in self.emails:
+                if email.get('id') == email_id:
+                    email_data = email
+                    break
+
+            if not email_data:
+                print(f"[NOTIF] Email {email_id} non trovata in memoria")
+                return
+
+            # Recupera articolo generato per ottenere titolo e categoria
+            article = self.generated_articles.get(email_id, {})
+
+            # Prepara informazioni articolo per notifica
+            article_info = {
+                'titolo': result.get('titolo') or article.get('titolo', 'N/A'),
+                'categoria': article.get('categoria', 'N/A'),
+                'url': result.get('url', 'N/A'),
+                'article_id': result.get('article_id', 'N/A'),
+                'photos_uploaded': result.get('photos_uploaded', 0),
+                'email_subject': email_data.get('subject', 'N/A'),
+                'email_sender': email_data.get('from', 'N/A')
+            }
+
+            # Estrai casella che ha ricevuto l'email originale
+            # email_id format: "mailbox_account:message_id"
+            # esempio: "posta@voce.it:CANt6mx0sz2hq6ZR_us0ZmguSZAmDz..."
+            mailbox_account = email_id.split(':', 1)[0] if ':' in email_id else None
+
+            if mailbox_account and email_enabled:
+                # Carica casella dal database
+                mailboxes = self.db.get_all_mailboxes(only_enabled=True)
+                sender_mailbox = None
+
+                for mb in mailboxes:
+                    if mb.get('email_address') == mailbox_account:
+                        sender_mailbox = mb
+                        break
+
+                if sender_mailbox:
+                    # Determina SMTP server e porta in base al provider
+                    imap_server = sender_mailbox.get('imap_server', 'imap.gmail.com')
+
+                    # Mappatura speciale per provider conosciuti
+                    if 'register.it' in imap_server:
+                        # Register.it usa server dedicato authsmtp.securemail.pro
+                        smtp_server = 'authsmtp.securemail.pro'
+                        smtp_port = 465  # Porta SSL Register.it
+                    elif 'gmail.com' in imap_server:
+                        smtp_server = 'smtp.gmail.com'
+                        smtp_port = 587
+                    else:
+                        # Default: sostituisci imap. con smtp.
+                        smtp_server = imap_server.replace('imap.', 'smtp.')
+                        smtp_port = 587
+
+                    # Sovrascrivi configurazione SMTP con quella della casella originale
+                    notifications_config['email'].update({
+                        'smtp_server': smtp_server,
+                        'smtp_port': smtp_port,
+                        'smtp_username': sender_mailbox.get('email_address', ''),
+                        'smtp_password': sender_mailbox.get('password', ''),
+                        'from_email': sender_mailbox.get('email_address', '')
+                    })
+                    print(f"[NOTIF] Invio notifica da casella originale: {mailbox_account} ({smtp_server}:{smtp_port})")
+                else:
+                    print(f"[NOTIF] Warning: Casella {mailbox_account} non trovata, uso config default")
+
+            print(f"[NOTIF] Invio notifiche per articolo: {article_info['titolo']}")
+
+            # Crea notifier e invia
+            from notifier import Notifier
+            notifier = Notifier(notifications_config)
+            notification_results = notifier.send_publication_notification(article_info)
+
+            # Log risultati
+            if notification_results.get('email'):
+                print(f"[NOTIF] ✓ Email inviata")
+            if notification_results.get('telegram'):
+                print(f"[NOTIF] ✓ Telegram inviato")
+
+        except Exception as e:
+            print(f"[NOTIF] ❌ Errore invio notifiche: {e}")
+            import traceback
+            traceback.print_exc()
 
     def load_senders(self):
         """Carica lista mittenti dalla config"""
@@ -1454,8 +1925,11 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Generazione articolo in corso...")
 
+        # Controlla se è modalità impaginazione
+        format_mode = getattr(self, '_format_mode', False)
+
         # Avvia thread
-        self.article_thread = ArticleGeneratorThread(email, provider)
+        self.article_thread = ArticleGeneratorThread(email, provider, format_mode=format_mode)
         # Passa email_id direttamente invece di row (che può cambiare se la tabella viene ricaricata)
         self.article_thread.finished.connect(lambda article: self.on_article_generated(email_id, article))
         self.article_thread.error.connect(self.on_article_error)
@@ -1469,6 +1943,14 @@ class MainWindow(QMainWindow):
             print(f"[CALLBACK] on_article_generated chiamato")
             print(f"[CALLBACK] Email ID: {email_id}")
 
+            # Controlla se siamo in modalità "Impagina e Pubblica"
+            format_and_publish_mode = getattr(self, '_format_and_publish_mode', False)
+
+            # Reset flag format_mode se era attivo
+            if hasattr(self, '_format_mode') and self._format_mode:
+                self._format_mode = False
+                print(f"[CALLBACK] Modalità impaginazione completata")
+
             self.generated_articles[email_id] = article
 
             # Salva articolo nel database
@@ -1479,38 +1961,58 @@ class MainWindow(QMainWindow):
             else:
                 print(f"[DB] ERRORE: Impossibile salvare articolo")
 
-            # Aggiorna stato email a GENERATED
-            print(f"[DB] Aggiornamento stato email a GENERATED...")
-            success = self.db.update_email_status(email_id, 'GENERATED')
-            if success:
-                print(f"[DB] Stato aggiornato a GENERATED con successo")
-                # IMPORTANTE: Aggiorna anche lo status in memoria trovando l'email per ID!
-                for i, email in enumerate(self.emails):
-                    if email.get('id') == email_id:
-                        self.emails[i]['status'] = 'GENERATED'
-                        print(f"[MEMORY] Stato aggiornato in memoria per email {email_id}")
-                        break
+            # Se siamo in modalità "Impagina e Pubblica", NON cambiare lo stato
+            # Pubbliceremo direttamente e lo stato andrà a PUBLISHED
+            if format_and_publish_mode:
+                print(f"[CALLBACK] Modalità Impagina e Pubblica: salto aggiornamento a GENERATED")
+
+                # Mostra preview articolo senza aggiornare la tabella
+                print(f"[GUI] Mostra preview articolo...")
+                self.show_article_preview(article)
+
+                # Avvia pubblicazione diretta
+                print(f"[CALLBACK] Avvio pubblicazione diretta...")
+                self.statusBar().showMessage("Pubblicazione su CMS in corso...")
+
+                # Reset del flag
+                self._format_and_publish_mode = False
+
+                # Pubblica direttamente
+                self.publish_article()
+
             else:
-                print(f"[DB] ERRORE: Impossibile aggiornare stato a GENERATED")
+                # Workflow normale: aggiorna stato a GENERATED
+                print(f"[DB] Aggiornamento stato email a GENERATED...")
+                success = self.db.update_email_status(email_id, 'GENERATED')
+                if success:
+                    print(f"[DB] Stato aggiornato a GENERATED con successo")
+                    # IMPORTANTE: Aggiorna anche lo status in memoria trovando l'email per ID!
+                    for i, email in enumerate(self.emails):
+                        if email.get('id') == email_id:
+                            self.emails[i]['status'] = 'GENERATED'
+                            print(f"[MEMORY] Stato aggiornato in memoria per email {email_id}")
+                            break
+                else:
+                    print(f"[DB] ERRORE: Impossibile aggiornare stato a GENERATED")
 
-            # Aggiorna tabella
-            print(f"[GUI] Aggiornamento tabella email...")
-            self.populate_email_table()
+                # Aggiorna tabella
+                print(f"[GUI] Aggiornamento tabella email...")
+                self.populate_email_table()
 
-            # Mostra preview
-            print(f"[GUI] Mostra preview articolo...")
-            self.show_article_preview(article)
+                # Mostra preview
+                print(f"[GUI] Mostra preview articolo...")
+                self.show_article_preview(article)
 
-            self.progress_bar.setVisible(False)
-            self.statusBar().showMessage("Articolo generato con successo!")
+                self.progress_bar.setVisible(False)
+                self.statusBar().showMessage("Articolo generato con successo!")
 
-            # AUTO-PUBBLICAZIONE: se email è in coda, pubblica automaticamente
-            if hasattr(self, 'auto_publish_queue') and email_id in self.auto_publish_queue:
-                print(f"[AUTO] Articolo generato, avvio pubblicazione automatica...")
-                self.auto_publish_queue.remove(email_id)
-                self.auto_publish_article(email_id, article)
-            else:
-                print(f"[CALLBACK] Email non in coda auto-pubblicazione (queue: {getattr(self, 'auto_publish_queue', set())})")
+                # AUTO-PUBBLICAZIONE: se email è in coda, pubblica automaticamente
+                if hasattr(self, 'auto_publish_queue') and email_id in self.auto_publish_queue:
+                    print(f"[AUTO] Articolo generato, avvio pubblicazione automatica...")
+                    self.auto_publish_queue.remove(email_id)
+                    self.auto_publish_article(email_id, article)
+                else:
+                    print(f"[CALLBACK] Email non in coda auto-pubblicazione (queue: {getattr(self, 'auto_publish_queue', set())})")
 
             print(f"[CALLBACK] on_article_generated completato con successo")
 
@@ -1536,14 +2038,23 @@ class MainWindow(QMainWindow):
         row = selected_rows[0].row()
         email = self.emails[row]
         email_id = email.get('id', '')
+        status = email.get('status', 'NEW')
 
         # Mostra sempre il contenuto della mail originale
         self.show_email_content(email)
 
-        # Abilita pulsante pubblica solo se ha articolo generato
-        if email_id in self.generated_articles:
+        # Gestione visibilità pulsanti in base allo stato
+        if status == 'NEW':
+            # Email non elaborata: mostra solo "Impagina e Pubblica"
+            self.btn_format_publish.setEnabled(True)
+            self.btn_publish.setEnabled(False)
+        elif status == 'GENERATED':
+            # Articolo generato: mostra solo "Pubblica su CMS"
+            self.btn_format_publish.setEnabled(False)
             self.btn_publish.setEnabled(True)
-        else:
+        elif status == 'PUBLISHED':
+            # Articolo già pubblicato: disabilita entrambi
+            self.btn_format_publish.setEnabled(False)
             self.btn_publish.setEnabled(False)
 
     def show_article_preview(self, article):
@@ -1556,19 +2067,34 @@ class MainWindow(QMainWindow):
         <h3>{article.get('sottotitolo', '')}</h3>
         """
 
-        # Mostra foto se presente
+        # Mostra foto se presenti (singola o multiple)
         foto_path = article.get('foto_path')
-        if foto_path and os.path.exists(foto_path):
-            # Converti a path assoluto per QTextBrowser
-            abs_path = os.path.abspath(foto_path)
-            # Usa file:// URL per caricare l'immagine locale
-            preview_html += f"""
-            <div style="text-align: center; margin: 20px 0;">
-                <img src="file:///{abs_path.replace(chr(92), '/')}"
-                     style="max-width: 100%; max-height: 300px; border: 2px solid #ccc; border-radius: 5px;">
-                <p><small><strong>Foto allegata:</strong> {os.path.basename(foto_path)}</small></p>
-            </div>
-            """
+        if foto_path:
+            # Normalizza a lista per gestione uniforme
+            foto_list = [foto_path] if isinstance(foto_path, str) else foto_path
+
+            # Filtra solo foto esistenti
+            foto_esistenti = [f for f in foto_list if os.path.exists(f)]
+
+            if foto_esistenti:
+                preview_html += f"""
+                <div style="margin: 20px 0;">
+                    <p><strong>Foto allegate ({len(foto_esistenti)}):</strong></p>
+                """
+
+                for foto in foto_esistenti:
+                    # Converti a path assoluto per QTextBrowser
+                    abs_path = os.path.abspath(foto)
+                    # Usa file:// URL per caricare l'immagine locale
+                    preview_html += f"""
+                    <div style="text-align: center; margin: 10px 0;">
+                        <img src="file:///{abs_path.replace(chr(92), '/')}"
+                             style="max-width: 100%; max-height: 300px; border: 2px solid #ccc; border-radius: 5px;">
+                        <p><small>{os.path.basename(foto)}</small></p>
+                    </div>
+                    """
+
+                preview_html += "</div>"
 
         preview_html += "<hr>"
 
@@ -1698,7 +2224,8 @@ class MainWindow(QMainWindow):
 
     def on_cms_finished(self, result):
         """Callback quando pubblicazione CMS termina"""
-        self.btn_publish.setEnabled(True)
+        # Nascondi barra di progresso
+        self.progress_bar.setVisible(False)
 
         if result.get('success'):
             # Marca articolo come pubblicato nel database
@@ -1723,15 +2250,30 @@ class MainWindow(QMainWindow):
                 # Aggiorna tabella per mostrare nuovo stato
                 self.populate_email_table()
 
+                # NON riabilitare il pulsante - l'articolo è ora pubblicato
+                self.btn_publish.setEnabled(False)
+
+            # Prepara messaggio con info foto se presenti
+            photo_info = ""
+            if 'photos_uploaded' in result:
+                photos_count = result.get('photos_uploaded', 0)
+                if photos_count > 0:
+                    photo_info = f"\nFoto caricate: {photos_count}"
+                else:
+                    photo_info = "\nNessuna foto caricata"
+
             QMessageBox.information(
                 self, "Successo!",
                 f"Articolo pubblicato con successo sul CMS!\n\n"
                 f"Titolo: {result.get('titolo', 'N/A')}\n"
                 f"Tipo: {result.get('tipo', 'N/A')}\n"
                 f"URL: {result.get('url', 'N/A')}"
+                f"{photo_info}"
             )
             self.statusBar().showMessage("Articolo pubblicato con successo!", 5000)
         else:
+            # Solo in caso di errore, riabilita il pulsante
+            self.btn_publish.setEnabled(True)
             QMessageBox.warning(
                 self, "Errore",
                 f"Errore durante la pubblicazione:\n{result.get('error', 'Unknown')}"
@@ -1740,12 +2282,204 @@ class MainWindow(QMainWindow):
 
     def on_cms_error(self, error_msg):
         """Callback quando pubblicazione CMS ha errore"""
+        # Nascondi barra di progresso
+        self.progress_bar.setVisible(False)
+
         self.btn_publish.setEnabled(True)
         QMessageBox.critical(
             self, "Errore Pubblicazione CMS",
             f"Si è verificato un errore durante la pubblicazione:\n\n{error_msg}"
         )
         self.statusBar().showMessage("Errore pubblicazione", 5000)
+
+    def format_and_publish_email(self):
+        """Formatta il contenuto email con LLM (prompt specifico per impaginazione) e pubblica su CMS"""
+        # 1. Recupera email selezionata
+        selected_rows = self.email_table.selectedIndexes()
+        if not selected_rows:
+            QMessageBox.warning(self, "Attenzione", "Seleziona un'email")
+            return
+
+        row = selected_rows[0].row()
+        email = self.emails[row]
+        email_id = email.get('id', '')
+
+        # 2. Imposta flag per usare prompt di impaginazione E pubblicazione diretta
+        self._format_mode = True
+        self._format_and_publish_mode = True  # Flag per pubblicazione diretta
+        self._format_publish_email_id = email_id  # Salva l'email_id per la pubblicazione
+
+        # 3. Mostra messaggio utente
+        self.statusBar().showMessage("Impaginazione e pubblicazione email con LLM...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+
+        # 4. Riutilizza il workflow esistente generate_article
+        # Il flag _format_mode cambierà il prompt usato
+        self.generate_article(row)
+
+    def _format_email_to_article(self, email: dict, metadata: dict) -> dict:
+        """
+        Formatta il contenuto email in struttura articolo CMS
+
+        Args:
+            email: Dati email (id, subject, body, from, date, ...)
+            metadata: Dati dal dialog (titolo, sottotitolo, occhiello, categoria)
+
+        Returns:
+            dict: Articolo in formato CMS
+        """
+        body = email.get('body', '')
+
+        # Split paragrafi su doppio newline
+        paragraphs = [p.strip() for p in body.split('\n\n') if p.strip()]
+
+        # Se non ci sono doppie newline, split su singola newline
+        if len(paragraphs) < 2:
+            paragraphs = [p.strip() for p in body.split('\n') if p.strip()]
+
+        # Limita a 3 paragrafi (testo, testo2, testo3)
+        paragraphs = paragraphs[:3]
+
+        # Se c'è un solo paragrafo molto lungo, prova a dividerlo
+        if len(paragraphs) == 1 and len(paragraphs[0]) > 500:
+            # Cerca di dividere su punti seguiti da spazio maiuscola
+            import re
+            sentences = re.split(r'\.(\s+[A-Z])', paragraphs[0])
+            if len(sentences) > 3:
+                # Ricostruisci i paragrafi
+                para1 = sentences[0] + '.'
+                para2 = sentences[2] + '.' if len(sentences) > 2 else ''
+                para3 = sentences[4] + '.' if len(sentences) > 4 else ''
+                paragraphs = [p for p in [para1, para2, para3] if p and p != '.']
+
+        # Costruisci articolo
+        article = {
+            'tipo': 'Spotlight',
+            'categoria': metadata['categoria'],
+            'titolo': metadata['titolo'],
+            'sottotitolo': metadata['sottotitolo'],
+            'occhiello': metadata['occhiello'],
+            'contenuto': paragraphs,
+            'immagine': '',
+            'data_invio': email.get('date', ''),
+            'metadata': {
+                'original_sender': email.get('from', ''),
+                'original_subject': email.get('subject', ''),
+                'email_date': email.get('date', ''),
+                'processing_mode': 'format_only'  # Flag per distinguere da LLM
+            }
+        }
+
+        return article
+
+    def _auto_publish_article(self, email_id: str, article: dict, message_id: str):
+        """Pubblica articolo automaticamente (usato da auto_process_email in modalità format_only)"""
+        try:
+            print(f"[AUTO] Avvio pubblicazione automatica...")
+
+            # Credenziali CMS
+            cms_username = self.cms_user_input.text().strip() or os.getenv("CMS_USERNAME", "")
+            cms_password = self.cms_pass_input.text().strip() or os.getenv("CMS_PASSWORD", "")
+
+            if not cms_username or not cms_password:
+                print("[AUTO] ⚠️ Credenziali CMS mancanti, skip pubblicazione automatica")
+                # Rimuovi Message-ID dal set
+                if hasattr(self, 'processing_message_ids') and message_id:
+                    self.processing_message_ids.discard(message_id)
+                return
+
+            # Headless mode
+            headless = self.headless_combo.currentIndex() == 1  # 0=Visibile, 1=Nascosto
+
+            # Avvia thread pubblicazione
+            self.cms_thread = CMSPublishThread(
+                article=article,
+                cms_username=cms_username,
+                cms_password=cms_password,
+                headless=headless
+            )
+
+            self.cms_thread.progress.connect(lambda msg: print(f"[AUTO] {msg}"))
+            self.cms_thread.finished.connect(
+                lambda result: self._on_auto_publish_finished(email_id, message_id, result)
+            )
+            self.cms_thread.error.connect(
+                lambda err: self._on_auto_publish_error(email_id, message_id, err)
+            )
+
+            self.cms_thread.start()
+            print("[AUTO] Thread pubblicazione avviato")
+
+        except Exception as e:
+            import traceback
+            print(f"[AUTO] ❌ Errore avvio pubblicazione: {e}")
+            traceback.print_exc()
+            # Rimuovi Message-ID dal set in caso di errore
+            if hasattr(self, 'processing_message_ids') and message_id:
+                self.processing_message_ids.discard(message_id)
+
+    def _on_auto_publish_finished(self, email_id: str, message_id: str, result: dict):
+        """Callback dopo pubblicazione automatica completata"""
+        try:
+            if result.get('success'):
+                print(f"[AUTO] ✅ Pubblicazione completata con successo")
+                print(f"[AUTO] URL: {result.get('url', 'N/A')}")
+
+                # Aggiorna status a PUBLISHED nel database
+                self.db.update_email_status(email_id, 'PUBLISHED')
+                self.db.mark_article_published(
+                    email_id,
+                    cms_url=result.get('url')
+                )
+
+                # Aggiorna status in memoria
+                for i, email in enumerate(self.emails):
+                    if email.get('id') == email_id:
+                        self.emails[i]['status'] = 'PUBLISHED'
+                        print(f"[AUTO] Stato aggiornato in memoria: PUBLISHED")
+                        break
+
+                # Aggiorna tabella GUI
+                self.refresh_email_table()
+
+                # Mostra messaggio nella status bar
+                self.statusBar().showMessage(
+                    f"✅ Articolo pubblicato automaticamente: {result.get('titolo', 'N/A')}",
+                    5000
+                )
+
+                print(f"[AUTO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                print(f"[AUTO] ELABORAZIONE AUTOMATICA COMPLETATA")
+                print(f"[AUTO] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+            else:
+                print(f"[AUTO] ❌ Pubblicazione fallita: {result.get('error')}")
+                self.statusBar().showMessage(
+                    f"❌ Errore pubblicazione automatica: {result.get('error', 'Unknown')}",
+                    5000
+                )
+
+        except Exception as e:
+            import traceback
+            print(f"[AUTO] ❌ Errore in callback pubblicazione: {e}")
+            traceback.print_exc()
+
+        finally:
+            # Rimuovi Message-ID dal set di elaborazione
+            if hasattr(self, 'processing_message_ids') and message_id:
+                self.processing_message_ids.discard(message_id)
+                print(f"[AUTO] Message-ID rimosso da processing_message_ids")
+
+    def _on_auto_publish_error(self, email_id: str, message_id: str, error_msg: str):
+        """Callback quando pubblicazione automatica ha errore"""
+        print(f"[AUTO] ❌ Errore pubblicazione: {error_msg}")
+        self.statusBar().showMessage(f"❌ Errore pubblicazione automatica: {error_msg}", 5000)
+
+        # Rimuovi Message-ID dal set
+        if hasattr(self, 'processing_message_ids') and message_id:
+            self.processing_message_ids.discard(message_id)
+            print(f"[AUTO] Message-ID rimosso da processing_message_ids (errore)")
 
     def sort_emails_by_date(self):
         """Ordina le email per data (più recenti prima)"""
@@ -1790,11 +2524,26 @@ class MainWindow(QMainWindow):
             if not hasattr(self, 'email_ids_cache'):
                 self.email_ids_cache = set()
 
+            # Deduplicazione: usa set per tracciare ID già visti
+            seen_ids = set()
+
             # Converti formato DB a formato applicazione
             self.emails = []
+            duplicates_skipped = 0
+
             for db_email in db_emails:
+                email_id = db_email['email_id']
+
+                # Salta duplicati
+                if email_id in seen_ids:
+                    print(f"[DB] Email duplicata ignorata al caricamento: {email_id}")
+                    duplicates_skipped += 1
+                    continue
+
+                seen_ids.add(email_id)
+
                 email_data = {
-                    'id': db_email['email_id'],
+                    'id': email_id,
                     'from': db_email['sender'],
                     'subject': db_email['subject'],
                     'date': db_email['date'],
@@ -1806,7 +2555,7 @@ class MainWindow(QMainWindow):
                 }
 
                 # Popola cache ID
-                self.email_ids_cache.add(db_email['email_id'])
+                self.email_ids_cache.add(email_id)
 
                 # Converti allegati (lazy - già vuoti da get_recent_emails)
                 for att in db_email.get('attachments', []):
@@ -1827,7 +2576,10 @@ class MainWindow(QMainWindow):
             self.sort_emails_by_date()
 
             self.populate_email_table()
-            print(f"[LAZY] Caricate {len(self.emails)} email recenti (limite: 100)")
+            if duplicates_skipped > 0:
+                print(f"[LAZY] Caricate {len(self.emails)} email uniche (ignorate {duplicates_skipped} duplicati, limite: 100)")
+            else:
+                print(f"[LAZY] Caricate {len(self.emails)} email recenti (limite: 100)")
 
         except Exception as e:
             print(f"[DB] Errore caricamento email: {e}")
@@ -1976,10 +2728,21 @@ class MainWindow(QMainWindow):
         if not new_emails:
             return
 
+        # Crea set degli email_id già presenti in memoria per deduplicazione
+        existing_ids = {email.get('id') for email in self.emails}
+
+        added_count = 0
         # Converti formato email e aggiungi a self.emails
         for email in new_emails:
+            email_id = email.get('id', '')
+
+            # CONTROLLO DUPLICATI: salta se già presente
+            if email_id in existing_ids:
+                print(f"[GUI] Email duplicata ignorata: {email_id}")
+                continue
+
             email_data = {
-                'id': email.get('id'),
+                'id': email_id,
                 'from': email.get('from'),
                 'subject': email.get('subject'),
                 'date': email.get('date'),
@@ -1991,6 +2754,8 @@ class MainWindow(QMainWindow):
             }
             # Aggiungi in cima alla lista (più recenti prima)
             self.emails.insert(0, email_data)
+            existing_ids.add(email_id)  # Aggiorna il set
+            added_count += 1
 
         # MEMORY MANAGEMENT: Limita email in memoria per evitare memory leak
         MAX_EMAILS_IN_MEMORY = 200
@@ -2013,7 +2778,7 @@ class MainWindow(QMainWindow):
 
         # Aggiorna solo la tabella (senza ricaricare dal DB)
         self.populate_email_table()
-        print(f"[GUI] {len(new_emails)} email aggiunte alla tabella")
+        print(f"[GUI] {added_count} email aggiunte alla tabella (ignorate {len(new_emails) - added_count} duplicati)")
 
     def cleanup_memory_sets(self):
         """Pulizia periodica dei set in memoria per evitare entry orfane"""
@@ -2164,14 +2929,33 @@ class MainWindow(QMainWindow):
             self.processing_message_ids.add(message_id)
             print(f"[AUTO] Message-ID aggiunto a processing_message_ids: {message_id[:30]}...")
 
+            # Controlla configurazione modalità di elaborazione
+            auto_mode = self.config.get('auto_processing', {}).get('mode', 'llm')
+            print(f"[AUTO] Modalità: {auto_mode}")
+
             # Marca questa email per auto-pubblicazione dopo generazione
             if not hasattr(self, 'auto_publish_queue'):
                 self.auto_publish_queue = set()
             self.auto_publish_queue.add(email_id)
 
-            # 1. Genera articolo usando il metodo manuale (include download allegati!)
-            print(f"[AUTO] Chiamata a generate_article(row={row}) - include download allegati")
-            self.generate_article(row)
+            if auto_mode == 'format_only':
+                # Modalità "Solo impagina e pubblica" - usa LLM con prompt di impaginazione
+                print(f"[AUTO] Modalità: impaginazione con LLM")
+
+                # Imposta flag per usare prompt di impaginazione
+                self._format_mode = True
+
+                # Genera articolo (con prompt di impaginazione)
+                print(f"[AUTO] Chiamata a generate_article(row={row}) con modalità impaginazione")
+                self.generate_article(row)
+
+            else:
+                # Modalità "Elabora con LLM" (default - prompt completo)
+                print(f"[AUTO] Modalità: elaborazione LLM completa")
+
+                # 1. Genera articolo usando il metodo manuale (include download allegati!)
+                print(f"[AUTO] Chiamata a generate_article(row={row}) - include download allegati")
+                self.generate_article(row)
 
         except Exception as e:
             import traceback
@@ -2244,6 +3028,9 @@ class MainWindow(QMainWindow):
             # Notifica utente
             self.statusBar().showMessage(f"✅ Articolo pubblicato automaticamente!", 10000)
             QApplication.beep()
+
+            # Invia notifiche (Email/Telegram) se configurate
+            self._send_publication_notification(email_id, result)
 
         except Exception as e:
             print(f"[AUTO] ❌ Errore aggiornamento stato: {e}")

@@ -36,6 +36,77 @@ class ArticleGenerator:
             return os.getenv("ANTHROPIC_API_KEY")
         return None
 
+    # Vademecum editoriale - regole di stile giornalistico
+    VADEMECUM_RULES = """
+6. STILE EDITORIALE (VADEMECUM DEL REDATTORE):
+
+Applica RIGOROSAMENTE le seguenti regole di stile giornalistico:
+
+MAIUSCOLE E MINUSCOLE:
+- il Comune, il Comune di Carpi, i comuni italiani
+- il Presidente della Repubblica, il presidente [nome]
+- il Teatro comunale, il Teatro, il Comunale
+- la Repubblica italiana
+- l'Assessore, il Sindaco, il sindaco [nome]
+- i Consiglieri, il consigliere [nome]
+- l'assessorato all'Urbanistica
+- Sigle SENZA punti: Usa (non USA), Arci, Ater
+- piazza, via, viale: SEMPRE minuscolo
+- palazzo [nome] (minuscolo)
+- Il Municipio (maiuscolo)
+- la Commissione, il Consiglio, la Giunta
+- Reparti: il reparto di Otorino
+- Classi scolastiche: classe Prima, Seconda
+- Materie: Filosofia, Storia (maiuscolo)
+- Sport: il Carpi Fc, l'Ac Cibeno, l'Us Mondial
+
+NUMERI:
+- Formato migliaia: 1.253 (punto per migliaia)
+- Grandi numeri: 2 mila 253
+- Lettere da uno a dieci: uno, due, tre...dieci
+- Cifre da 11 in poi: 11, 12, 13...
+- Milioni: 150 milioni (NON 150.000.000)
+- Decenni: anni Ottanta (NON anni '80)
+- Anni: nel 1979 (NON nel '79)
+- Percentuali: SEMPRE "per cento" (MAI simbolo %)
+
+QUALIFICHE E TITOLI:
+- EVITA titoli professionali prima del nome
+- FORMATO CORRETTO: "Mario Rossi, medico" o "Mario Rossi, responsabile del reparto..."
+- NON SCRIVERE: "il dottor Rossi" o "l'ingegner Bianchi"
+
+CALENDARIO:
+- Giorni e mesi: SEMPRE minuscoli (lunedì, gennaio)
+
+GERGO E FORESTIERISMI:
+- MAI abbreviazioni: scrivi "eccetera" (NON "etc.")
+- Parole straniere non comuni: usa corsivo se possibile
+- Espressioni dialettali: in corsivo se possibile
+
+PUNTEGGIATURA:
+- Discorsi diretti: virgolette basse « »
+- Se non disponibili: virgolette alte " "
+- Interruzione discorso: «Testo – sostiene il Sindaco –, continua...»
+- Virgola o punteggiatura DOPO il trattino
+- Virgolette alte " " per citazioni brevi
+- EVITA punto esclamativo: usa puntini di sospensione...
+
+STILE ARTICOLO:
+- INIZIO: NON iniziare con data/ora, MA con contenuto sostanziale
+- Esempio CORRETTO: "Si svolgerà all'insegna del ricordo di Giovanni Paolo II la trentesima edizione..."
+- Esempio SBAGLIATO: "Sabato 15 marzo alle 10 si terrà..."
+- ATTACCO: elegante, dentro le cose, possibile citazione
+- PRIME RIGHE: contenere già le notizie essenziali
+- VIRGOLETTATI: inserire se presente foto della persona citata
+- FINALI: EVITA "si auspica...", "ci si augura..."
+- CHIUSURA: battuta, ripresa tema iniziale, o sintesi telegrafica
+- COMUNICATI: prendi distanze con condizionali, "secondo...", "a suo parere..."
+
+NOMI PROPRI:
+- SEMPRE: nome poi cognome (Mario Rossi)
+- NEVER: cognome poi nome (Rossi Mario)
+"""
+
     def _init_client(self):
         """Inizializza il client LLM"""
         try:
@@ -73,7 +144,8 @@ class ArticleGenerator:
     def generate_article(self, email_content: str,
                         subject: str = "",
                         sender: str = "",
-                        custom_instructions: str = "") -> str:
+                        custom_instructions: str = "",
+                        format_mode: bool = False) -> str:
         """
         Genera un articolo giornalistico dal contenuto email
 
@@ -82,15 +154,21 @@ class ArticleGenerator:
             subject: oggetto dell'email
             sender: mittente dell'email
             custom_instructions: istruzioni aggiuntive per il LLM
+            format_mode: se True, usa prompt semplificato per impaginazione
 
         Returns:
             Articolo generato
         """
 
         # Crea il prompt
-        prompt = self._create_article_prompt(
-            email_content, subject, sender, custom_instructions
-        )
+        if format_mode:
+            prompt = self._create_format_prompt(
+                email_content, subject, sender, custom_instructions
+            )
+        else:
+            prompt = self._create_article_prompt(
+                email_content, subject, sender, custom_instructions
+            )
 
         # Genera con il provider appropriato
         if self.provider == "openai":
@@ -125,6 +203,8 @@ ISTRUZIONI:
 7. Genera keywords SEO rilevanti per l'articolo
 
 {custom_instructions if custom_instructions else ''}
+
+{self.VADEMECUM_RULES}
 
 FORMATO OUTPUT - IMPORTANTE:
 Restituisci SOLO un oggetto JSON valido con questa struttura (non aggiungere testo prima o dopo il JSON):
@@ -194,6 +274,57 @@ Genera l'articolo in formato JSON:"""
 
         return base_prompt
 
+    def _create_format_prompt(self, content: str, subject: str,
+                              sender: str, custom_instructions: str) -> str:
+        """
+        Crea un prompt specifico per la modalità impaginazione.
+        Questo prompt è più semplice e focalizzato sulla strutturazione del contenuto.
+        """
+        return f"""Organizza il seguente contenuto email in formato articolo per pubblicazione su CMS.
+
+EMAIL ORIGINALE:
+Mittente: {sender}
+Oggetto: {subject}
+
+Contenuto:
+{content}
+
+COMPITO:
+Prepara il contenuto di questa mail per adattarlo all'impaginazione sul CMS. Scegli la categoria più appropriata tra:
+   Scuola, Sanità, Economia, Attualità, Politica, Sport, Cultura, Cronaca, Territorio
+
+2. PARAGRAFI - Organizza il contenuto in 1-3 paragrafi:
+   - Se email breve: usa 1-2 paragrafi
+   - Se email lunga: usa 3 paragrafi
+   - Mantieni tutto il testo originale integralmente correggendo solo eventuali refusi. Non tagliare parti del testo.
+
+3. METADATA:
+   - Titolo: dall'oggetto o dal contenuto
+   - Sottotitolo: opzionale se pertinente
+   - Occhiello: sintesi breve (max 10 parole)
+
+IMPORTANTE: Preserva il contenuto originale del comunicato. Organizza e formatta senza riscrivere o tagliare parti..
+
+{custom_instructions if custom_instructions else ''}
+
+FORMATO OUTPUT - Restituisci SOLO questo JSON (senza testo aggiuntivo):
+
+{{
+  "tipo": "Spotlight",
+  "categoria": "una tra: Scuola, Sanità, Economia, Attualità, Politica, Sport, Cultura, Cronaca, Territorio",
+  "titolo": "titolo dell'articolo",
+  "sottotitolo": "sottotitolo (opzionale)",
+  "occhiello": "sintesi breve",
+  "contenuto": [
+    "primo paragrafo",
+    "secondo paragrafo (se necessario)",
+    "terzo paragrafo (se necessario)"
+  ],
+  "immagine": ""
+}}
+
+Genera il JSON:"""
+
     def _generate_openai(self, prompt: str, model: str = "gpt-4o") -> str:
         """Genera articolo usando OpenAI"""
         try:
@@ -250,13 +381,15 @@ Genera l'articolo in formato JSON:"""
             return f"Errore Ollama: {e}"
 
     def batch_generate_articles(self, emails: List[Dict],
-                                custom_instructions: str = "") -> List[Dict]:
+                                custom_instructions: str = "",
+                                format_mode: bool = False) -> List[Dict]:
         """
         Genera articoli per una lista di email
 
         Args:
             emails: lista di dizionari email (da EmailProcessor)
             custom_instructions: istruzioni personalizzate
+            format_mode: se True, usa prompt di impaginazione invece che generazione completa
 
         Returns:
             Lista di articoli generati con metadata
@@ -264,34 +397,48 @@ Genera l'articolo in formato JSON:"""
         articles = []
 
         total = len(emails)
-        print(f"\n[AI] Generazione di {total} articoli con {self.provider.upper()}...\n")
+        mode_text = "Impaginazione" if format_mode else "Generazione"
+        print(f"\n[AI] {mode_text} di {total} articoli con {self.provider.upper()}...\n")
 
         for i, email_data in enumerate(emails, 1):
             print(f"[>] Processando email {i}/{total}: {email_data.get('subject', 'N/A')}")
 
+            # In format_mode, _create_format_prompt gestisce tutto
+            # Altrimenti usa le custom_instructions
             article_raw = self.generate_article(
                 email_content=email_data.get('body', ''),
                 subject=email_data.get('subject', ''),
                 sender=email_data.get('from', ''),
-                custom_instructions=custom_instructions
+                custom_instructions=custom_instructions,
+                format_mode=format_mode
             )
 
             # Parse e struttura il JSON
             article_structured = self._parse_and_structure_article(article_raw)
 
-            # Aggiungi foto allegata (se presente)
+            # Aggiungi TUTTE le foto allegate (non solo la prima)
             attachments = email_data.get('attachments', [])
             foto_path = None
             if attachments and len(attachments) > 0:
-                # Usa la prima foto allegata
-                foto_path = attachments[0].get('path')
-                print(f"   [OK] Foto trovata: {attachments[0].get('filename')}")
+                # Raccogli TUTTE le foto allegate
+                foto_paths = [att.get('path') for att in attachments if att.get('path')]
+
+                if len(foto_paths) == 1:
+                    # Una sola foto: usa stringa
+                    foto_path = foto_paths[0]
+                    print(f"   [OK] 1 foto trovata: {attachments[0].get('filename')}")
+                elif len(foto_paths) > 1:
+                    # Multiple foto: usa lista
+                    foto_path = foto_paths
+                    print(f"   [OK] {len(foto_paths)} foto trovate:")
+                    for att in attachments:
+                        print(f"       - {att.get('filename')}")
 
             # Aggiungi metadata
             article_data = {
                 **article_structured,  # Unpack del JSON strutturato
                 'data_invio': datetime.now().strftime('%Y-%m-%d'),
-                'foto_path': foto_path,  # Path alla foto allegata
+                'foto_path': foto_path,  # Path alle foto allegate (stringa o lista)
                 'metadata': {
                     'email_id': email_data.get('id', ''),
                     'original_subject': email_data.get('subject', ''),

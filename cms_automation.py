@@ -6,6 +6,7 @@ Usa Playwright per compilare e inviare il form automaticamente
 import asyncio
 from playwright.async_api import async_playwright
 from datetime import datetime
+from typing import Dict, List
 import json
 import os
 
@@ -169,16 +170,11 @@ class CMSPublisher:
         await self.page.wait_for_selector('input#pwd', timeout=5000)
         await asyncio.sleep(1)
 
-        # Compila form login con timing più umano
-        await self.page.click('input#user')
+        # Compila form login (usa fill invece di keyboard.type)
+        await self.page.fill('input#user', self.username)
         await asyncio.sleep(0.5)
-        await self.page.keyboard.type(self.username, delay=150)
-        await asyncio.sleep(0.8)
-
-        await self.page.click('input#pwd')
+        await self.page.fill('input#pwd', self.password)
         await asyncio.sleep(0.5)
-        await self.page.keyboard.type(self.password, delay=150)
-        await asyncio.sleep(0.8)
 
         print("[CMS] Inviando form login...")
 
@@ -197,10 +193,6 @@ class CMSPublisher:
         # Verifica login - controllo più robusto
         current_url = self.page.url
         print(f"[CMS] URL dopo login: {current_url}")
-
-        # Salva screenshot per debug
-        await self.page.screenshot(path='cms_login_result.png', full_page=True)
-        print("[CMS] Screenshot salvato: cms_login_result.png")
 
         # Verifica se login riuscito: controlla che il form di login NON sia più presente
         login_form = await self.page.query_selector('input#user')
@@ -266,29 +258,25 @@ class CMSPublisher:
 
         print(f"[CMS] Form aperto: {self.page.url}")
 
-        # Screenshot del form vuoto per debug
-        await self.page.screenshot(path='cms_form_empty.png', full_page=True)
-        print("[CMS] Screenshot form vuoto: cms_form_empty.png")
-
         # Compila il form
         print("[CMS] Compilando form...")
 
         # Data e ora corrente
         now = datetime.now()
-        data_str = now.strftime('%d/%m/%Y')
+        data_str = now.strftime('%d-%m-%Y')
         ora_str = now.strftime('%H:%M')
 
         await self.page.fill('input[name="data"]', data_str)
         await self.page.fill('input[name="data_hour"]', ora_str)
 
         # Seleziona template (necessario per far apparire altri campi)
-        # Usa JavaScript perché il select è nascosto (tabindex=-1)
+        # Usa JavaScript perché il select è nascosto (tabindex=2)
         print("[CMS] Selezionando template...")
         try:
             await self.page.evaluate("""
                 const select = document.querySelector('select[name="template"]');
                 if (select) {
-                    select.value = '1';
+                    select.value = '2';
                     select.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             """)
@@ -366,29 +354,7 @@ class CMSPublisher:
         # Fonte
         await self.page.fill('input[name="fonte"]', fonte)
 
-        # Upload foto se presente nel JSON
-        foto_path = article_json.get('foto_path')
-        if foto_path:
-            # Converti a path assoluto se è relativo
-            if not os.path.isabs(foto_path):
-                foto_path = os.path.abspath(foto_path)
-
-            if os.path.exists(foto_path):
-                print(f"[CMS] Caricando foto: {foto_path}")
-                try:
-                    file_input = await self.page.query_selector('input[name="img"]')
-                    if file_input:
-                        await file_input.set_input_files(foto_path)
-                        print(f"[CMS] Foto caricata: {os.path.basename(foto_path)}")
-                        await asyncio.sleep(2)  # Attendi caricamento
-                except Exception as e:
-                    print(f"[CMS] Warning: Impossibile caricare foto: {e}")
-            else:
-                print(f"[CMS] Warning: File foto non trovato: {foto_path}")
-
-        # Screenshot del form compilato
-        await self.page.screenshot(path='cms_form_filled.png', full_page=True)
-        print("[CMS] Screenshot form compilato: cms_form_filled.png")
+        # NON caricare foto qui - verranno caricate dopo dalla galleria
 
         # Submit del form
         print("[CMS] Inviando form...")
@@ -399,7 +365,6 @@ class CMSPublisher:
             await asyncio.sleep(5)
 
             print(f"[CMS] URL dopo submit: {self.page.url}")
-            await self.page.screenshot(path='cms_after_submit.png', full_page=True)
 
             # Verifica successo (se torna alla lista articoli, è andato bene)
             if 'spotlight' in self.page.url or 'apertura' in self.page.url or 'in_evidenza' in self.page.url:
@@ -408,6 +373,25 @@ class CMSPublisher:
                 # APPROVAZIONE AUTOMATICA - Trova e clicca il pulsante di approvazione
                 print("[CMS] Approvando articolo...")
                 await asyncio.sleep(3)
+
+                # Estrai article_id dal primo item (articolo appena creato)
+                article_id = None
+                try:
+                    # Aspetta che la lista sia caricata (AJAX)
+                    await asyncio.sleep(3)
+                    await self.page.wait_for_selector('a.yellow[data-action="confirm"]', timeout=10000)
+
+                    # Trova il primo item della lista
+                    first_item = await self.page.query_selector('div.item[data-id]')
+
+                    if first_item:
+                        article_id = await first_item.get_attribute('data-id')
+                        print(f"[CMS] ✓ Article ID estratto: {article_id}")
+                    else:
+                        print("[CMS] ✗ Primo item non trovato")
+
+                except Exception as e:
+                    print(f"[CMS] ✗ Errore estrazione article_id: {e}")
 
                 try:
                     # Cerca il primo articolo nella lista (il più recente, appena creato)
@@ -418,29 +402,22 @@ class CMSPublisher:
                         # Clicca per approvare
                         await approve_btn.click()
                         await asyncio.sleep(2)
-                        print("[CMS] Articolo approvato!")
+                        print("[CMS] ✓ Articolo approvato!")
                     else:
                         print("[CMS] Warning: Bottone approvazione non trovato (articolo già approvato?)")
 
-                    # Rendi visibile l'articolo
-                    visibility_btn = await self.page.query_selector('a.yellow[data-action="show"]')
-                    if visibility_btn:
-                        await visibility_btn.click()
-                        await asyncio.sleep(2)
-                        print("[CMS] Articolo reso visibile!")
-                    else:
-                        print("[CMS] Warning: Bottone visibilità non trovato (già visibile?)")
+                    # NON rendiamo visibile l'articolo - rimane approvato ma non visibile
+                    print("[CMS] ✓ Articolo lasciato NON VISIBILE (da rendere visibile manualmente)")
 
                 except Exception as e:
-                    print(f"[CMS] Warning: Errore durante approvazione/visibilità: {e}")
-
-                await self.page.screenshot(path='cms_final.png', full_page=True)
+                    print(f"[CMS] Warning: Errore durante approvazione: {e}")
 
                 return {
                     'success': True,
                     'url': self.page.url,
                     'titolo': titolo,
-                    'tipo': tipo
+                    'tipo': tipo,
+                    'article_id': article_id
                 }
             else:
                 print("[CMS] Possibile errore nella pubblicazione")
@@ -451,6 +428,140 @@ class CMSPublisher:
                 }
         else:
             raise Exception("Bottone submit non trovato")
+
+    async def upload_photos_to_gallery(self, article_id: str, photo_paths: List[str]) -> Dict:
+        """
+        Carica le foto nella galleria dell'articolo.
+        Clicca il pulsante galleria dalla lista articoli e carica tutte le foto.
+
+        Args:
+            article_id: ID dell'articolo nel CMS
+            photo_paths: Lista di percorsi assoluti alle foto da caricare
+
+        Returns:
+            Dict con success, uploaded_count, total_photos, error
+        """
+        print(f"[CMS] Caricamento {len(photo_paths)} foto per article_id: {article_id}")
+
+        if not article_id:
+            return {
+                'success': False,
+                'error': 'Article ID mancante',
+                'uploaded_count': 0,
+                'total_photos': len(photo_paths)
+            }
+
+        if not photo_paths:
+            return {
+                'success': True,
+                'uploaded_count': 0,
+                'total_photos': 0
+            }
+
+        try:
+            # Trova il div dell'articolo nella lista usando l'article_id
+            print(f"[CMS] Cerco item articolo con ID: {article_id}")
+            article_item = await self.page.query_selector(f'div.item[data-id="{article_id}"]')
+
+            if not article_item:
+                print(f"[CMS] ✗ Item articolo non trovato per ID: {article_id}")
+                return {
+                    'success': False,
+                    'error': f'Articolo con ID {article_id} non trovato nella lista',
+                    'uploaded_count': 0,
+                    'total_photos': len(photo_paths)
+                }
+
+            # Trova e clicca il pulsante galleria nell'item
+            # Il pulsante è: <a href="../spotlight_gallery/index.php?id=61515"><i class="material-icons">photo_camera</i></a>
+            print("[CMS] Cerco pulsante galleria...")
+            gallery_btn = await article_item.query_selector('a[href*="spotlight_gallery"]')
+
+            if not gallery_btn:
+                print("[CMS] ✗ Pulsante galleria non trovato")
+                return {
+                    'success': False,
+                    'error': 'Pulsante galleria non trovato',
+                    'uploaded_count': 0,
+                    'total_photos': len(photo_paths)
+                }
+
+            print("[CMS] ✓ Pulsante galleria trovato, apertura...")
+            await gallery_btn.click()
+            await asyncio.sleep(3)
+
+            # Ora dovremmo essere nella pagina di upload galleria
+            print(f"[CMS] URL galleria: {self.page.url}")
+
+            # Carica ogni foto
+            uploaded_count = 0
+            for i, photo_path in enumerate(photo_paths):
+                # Converti a path assoluto se necessario
+                if not os.path.isabs(photo_path):
+                    photo_path = os.path.abspath(photo_path)
+
+                if not os.path.exists(photo_path):
+                    print(f"[CMS] ✗ File non trovato: {photo_path}")
+                    continue
+
+                print(f"[CMS] Caricando foto {i+1}/{len(photo_paths)}: {os.path.basename(photo_path)}")
+
+                try:
+                    # Cerca input file per upload
+                    file_input = await self.page.query_selector('input[type="file"]')
+
+                    if not file_input:
+                        print("[CMS] ✗ Input file non trovato nella galleria")
+                        break
+
+                    await file_input.set_input_files(photo_path)
+                    print(f"[CMS] ✓ Foto selezionata: {os.path.basename(photo_path)}")
+                    await asyncio.sleep(2)
+
+                    # Cerca e clicca pulsante upload/submit (se necessario)
+                    upload_btn = await self.page.query_selector('button[type="submit"], input[type="submit"], button:has-text("Upload"), button:has-text("Carica")')
+                    if upload_btn:
+                        await upload_btn.click()
+                        await asyncio.sleep(2)
+                        print(f"[CMS] ✓ Foto {i+1} caricata")
+
+                    uploaded_count += 1
+
+                except Exception as e:
+                    print(f"[CMS] ✗ Errore caricamento foto {os.path.basename(photo_path)}: {e}")
+
+            print(f"[CMS] ✓ Upload completato: {uploaded_count}/{len(photo_paths)} foto caricate")
+
+            # Torna alla lista articoli
+            print("[CMS] Ritorno alla lista articoli...")
+            try:
+                back_btn = await self.page.query_selector('a:has-text("Back"), a:has-text("Indietro"), a.back')
+                if back_btn:
+                    await back_btn.click()
+                    await asyncio.sleep(2)
+                else:
+                    # Naviga direttamente
+                    await self.page.goto(f"{self.cms_url}/spotlight/index.php")
+                    await asyncio.sleep(2)
+            except Exception as e:
+                print(f"[CMS] Warning: Errore ritorno lista articoli: {e}")
+
+            return {
+                'success': True,
+                'uploaded_count': uploaded_count,
+                'total_photos': len(photo_paths)
+            }
+
+        except Exception as e:
+            print(f"[CMS] ✗ ERRORE upload foto galleria: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'success': False,
+                'error': str(e),
+                'uploaded_count': 0,
+                'total_photos': len(photo_paths)
+            }
 
     async def close(self):
         """Chiude il browser e Playwright"""
@@ -494,8 +605,7 @@ async def test_publish():
     }
 
     # Crea publisher e pubblica
-    # NOTA: Inserisci le tue credenziali qui per testare
-    publisher = CMSPublisher(username='your_username', password='your_password')
+    publisher = CMSPublisher(username='SRinaldi', password='voce2026')
 
     try:
         await publisher.start(headless=False)
